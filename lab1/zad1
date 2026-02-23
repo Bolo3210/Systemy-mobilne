@@ -2,62 +2,60 @@ import math
 import random
 import matplotlib.pyplot as plt
 
-class GeneratorSystemyMobilne:
-    def __init__(self, seed=None):
-        
-        if seed is not None:
-            random.seed(seed)
-            self.last_x = seed
-        else:
-            self.last_x = random.randint(1, 1000000)
-            
-    def gen_u_0_1(self):
-        
-        a = 16807
-        c = 2**31 - 1
-        self.last_x = (a * self.last_x) % c
-        return self.last_x / c
+def inicjalizuj_generator(seed=None):
+    if seed is not None:
+        random.seed(seed)
+        return seed
+    else:
+        return random.randint(1, 1000000)
 
-    def poisson(self, lam):
-        
-        X = -1
-        S = 1.0
-        q = math.exp(-lam)
-        while S > q:
-            S *= self.gen_u_0_1()
-            X += 1
-        return X
+def gen_u_0_1(last_x):
+    a = 16807
+    c = 2**31 - 1
+    last_x = (a * last_x) % c
+    return last_x / c, last_x
 
-    def normalny(self, mu, sigma):
-        
-        u1 = self.gen_u_0_1()
-        u2 = self.gen_u_0_1()
-        
-        z0 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
-        
-        return mu + sigma * z0
+def poisson(lam, last_x):
+    X = -1
+    S = 1.0
+    q = math.exp(-lam)
+    while S > q:
+        u, last_x = gen_u_0_1(last_x)
+        S *= u
+        X += 1
+    return X, last_x
+
+def normalny(mu, sigma, last_x):
+    u1, last_x = gen_u_0_1(last_x)
+    u2, last_x = gen_u_0_1(last_x)
+    z0 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+    return mu + sigma * z0, last_x
 
 if __name__ == "__main__":
+    N = 10000
+    lambda_param = 4
+    mu_param = 0
+    sigma_param = 1
     
-    N = 10000          
-    lambda_param = 4   
-    mu_param = 0       
-    sigma_param = 1    
+    last_x = inicjalizuj_generator(seed=42)
     
-
-    gen = GeneratorSystemyMobilne(seed=42)
-
-    dane_poisson = [gen.poisson(lambda_param) for _ in range(N)]
-    dane_normalny = [gen.normalny(mu_param, sigma_param) for _ in range(N)]
-
-   
+    dane_poisson = []
+    for _ in range(N):
+        wartosc, last_x = poisson(lambda_param, last_x)
+        dane_poisson.append(wartosc)
+    
+    dane_normalny = []
+    for _ in range(N):
+        wartosc, last_x = normalny(mu_param, sigma_param, last_x)
+        dane_normalny.append(wartosc)
+    
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
+    
     ax1.hist(dane_poisson, bins=range(max(dane_poisson)+2), color='skyblue', edgecolor='black', align='left')
     ax1.set_title(f"Rozkład Poissona (lambda={lambda_param})")
     
     ax2.hist(dane_normalny, bins=50, color='salmon', edgecolor='black')
     ax2.set_title(f"Rozkład Normalny (mu={mu_param}, sigma={sigma_param})")
-
+    
     plt.tight_layout()
     plt.show()
