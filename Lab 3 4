@@ -23,7 +23,11 @@ class BaseStationSimulator:
         self.max_duration = 30
         self.simulation_time = 30
 
-        self.arrival_times = []
+        # Listy zgodne z zadaniem
+        self.lambda_list = []  # Lista λi (stóp przybycia)
+        self.mu_list = []  # Lista μi (długości rozmów) - pary z λi
+        self.pairs = []  # Lista par (λi, μi)
+
         self.channels = [None] * self.num_channels
         self.queue = deque(maxlen=self.queue_length)
         self.served_calls = 0
@@ -39,6 +43,7 @@ class BaseStationSimulator:
         self.paused = False
         self.current_time = 0
         self.call_counter = 0
+        self.current_k = 0
 
         self.results_file = ""
         self.setup_ui()
@@ -49,9 +54,20 @@ class BaseStationSimulator:
         self.results_file = f"wyniki_symulacji_{timestamp}.txt"
 
         with open(self.results_file, 'w', encoding='utf-8') as f:
-            f.write(f"{'Czas':>6} {'Rho':>8} {'Q':>8} {'W':>8} "
-                    f"{'Kanaly':>8} {'Lambda':>8} {'Srednia':>10} "
-                    f"{'Obsluz':>8} {'Zablok':>8}\n")
+            f.write("PARAMETRY SYMULACJI:\n")
+            f.write(f"Liczba kanałów: {self.num_channels}\n")
+            f.write(f"Długość kolejki: {self.queue_length}\n")
+            f.write(f"Lambda (natężenie): {self.lambda_rate}\n")
+            f.write(f"Średnia długość rozmowy: {self.avg_call_duration}\n")
+            f.write(f"Odchylenie standardowe: {self.std_dev}\n")
+            f.write(f"Min czas: {self.min_duration}\n")
+            f.write(f"Max czas: {self.max_duration}\n")
+            f.write(f"Czas symulacji: {self.simulation_time}\n\n")
+
+            f.write("WYNIKI:\n")
+            f.write(f"{'Czas':>6} {'Rho':>8} {'Q':>8} {'W':>8} ")
+            f.write(f"{'Kanaly':>8} {'Lambda':>8} {'Srednia':>10} ")
+            f.write(f"{'Obsluz':>8} {'Zablok':>8}\n")
             f.write("-" * 80 + "\n")
 
     def save_results(self):
@@ -66,6 +82,64 @@ class BaseStationSimulator:
                         f"{self.avg_call_duration:10.2f} "
                         f"{self.served_calls:8d} "
                         f"{self.blocked_calls:8d}\n")
+
+    def generate_pairs(self):
+        """Krok 1 i 2: Generowanie par (λi, μi)"""
+        self.pairs = []
+        total_lambda = 0
+        call_id = 0
+
+        # Generuj aż suma λi > czas symulacji
+        while total_lambda <= self.simulation_time:
+            # λi z rozkładu Poissona (wykładniczy dla czasu między przyjściami)
+            lambda_i = np.random.exponential(1.0 / self.lambda_rate)
+
+            # μi z rozkładu Gaussa z ograniczeniami
+            mu_i = np.random.normal(self.avg_call_duration, self.std_dev)
+            mu_i = max(self.min_duration, min(self.max_duration, mu_i))
+
+            self.pairs.append({
+                'id': call_id,
+                'lambda': lambda_i,
+                'mu': mu_i,
+                'arrival_time': total_lambda,  # skumulowany czas
+                'processed': False
+            })
+
+            total_lambda += lambda_i
+            call_id += 1
+
+        return self.pairs
+
+    def get_next_k_elements(self):
+        """Krok 3a: Pobierz k elementów gdzie Σλi < 1 i Σλi ≥ 1"""
+        if not self.pairs:
+            return []
+
+        k_elements = []
+        sum_lambda = 0
+        index = 0
+
+        # Szukaj pierwszego nieprzetworzonego elementu
+        while index < len(self.pairs) and self.pairs[index]['processed']:
+            index += 1
+
+        if index >= len(self.pairs):
+            return []
+
+        # Zbieraj elementy aż Σλi ≥ 1
+        while index < len(self.pairs) and sum_lambda < 1:
+            pair = self.pairs[index]
+            if not pair['processed']:
+                sum_lambda += pair['lambda']
+                k_elements.append(pair)
+            index += 1
+
+        # Sprawdź warunek Σλi ≥ 1
+        if sum_lambda >= 1:
+            return k_elements
+        else:
+            return []  # Nie ma wystarczającej liczby elementów
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -118,7 +192,8 @@ class BaseStationSimulator:
             ("Kolejka:", "queue", "0/10"),
             ("Śr. długość kolejki (Q):", "avg_q", "0.00"),
             ("Śr. czas oczekiwania (W):", "avg_w", "0.00"),
-            ("Intensywność (ρ):", "rho", "0.00")
+            ("Intensywność (ρ):", "rho", "0.00"),
+            ("Aktualne k:", "current_k", "0")
         ]
 
         for i, (label, key, default) in enumerate(stats_items):
@@ -189,27 +264,6 @@ class BaseStationSimulator:
 
         self.fig.tight_layout()
 
-    def generate_arrivals(self):
-        arrivals = []
-        total_time = 0
-
-        while total_time < self.simulation_time:
-            inter_arrival = np.random.exponential(1.0 / self.lambda_rate)
-            total_time += inter_arrival
-            if total_time < self.simulation_time:
-                arrivals.append({
-                    'id': self.call_counter,
-                    'arrival': total_time,
-                    'duration': self.generate_call_duration()
-                })
-                self.call_counter += 1
-
-        return arrivals
-
-    def generate_call_duration(self):
-        duration = np.random.normal(self.avg_call_duration, self.std_dev)
-        return max(self.min_duration, min(self.max_duration, duration))
-
     def update_channels_display(self):
         for i, channel in enumerate(self.channels):
             if channel:
@@ -220,6 +274,7 @@ class BaseStationSimulator:
                 self.channel_time_labels[i].config(text="-")
 
         self.queue_label.config(text=f"{len(self.queue)}/{self.queue_length}")
+        self.stats_labels['current_k'].set(str(self.current_k))
 
         self.root.update_idletasks()
 
@@ -272,6 +327,41 @@ class BaseStationSimulator:
 
         self.current_time += 1
 
+        # Krok 3a: Pobierz k elementów
+        k_elements = self.get_next_k_elements()
+        self.current_k = len(k_elements)
+
+        # Krok 3b: Umieść k elementów w kanałach
+        for pair in k_elements:
+            # Szukaj wolnego kanału
+            assigned = False
+            for i, channel in enumerate(self.channels):
+                if channel is None:
+                    self.channels[i] = {
+                        'id': pair['id'],
+                        'duration': pair['mu'],
+                        'remaining': pair['mu'],
+                        'arrival_time': self.current_time
+                    }
+                    assigned = True
+                    pair['processed'] = True
+                    break
+
+            if not assigned:
+                # Wszystkie kanały zajęte - dodaj do kolejki
+                if len(self.queue) < self.queue_length:
+                    self.queue.append({
+                        'id': pair['id'],
+                        'duration': pair['mu'],
+                        'remaining': pair['mu'],
+                        'arrival_time': self.current_time
+                    })
+                    pair['processed'] = True
+                else:
+                    self.blocked_calls += 1
+                    pair['processed'] = True  # Mimo blokady, element jest przetworzony
+
+        # Aktualizuj pozostały czas w kanałach
         for i, channel in enumerate(self.channels):
             if channel:
                 channel['remaining'] -= 1
@@ -281,38 +371,20 @@ class BaseStationSimulator:
 
                     if self.queue:
                         next_call = self.queue.popleft()
-                        next_call['remaining'] = next_call['duration']
                         self.channels[i] = next_call
 
-        while self.arrival_times and self.arrival_times[0]['arrival'] <= self.current_time:
-            call = self.arrival_times.pop(0)
-
-            assigned = False
-            for i, channel in enumerate(self.channels):
-                if channel is None:
-                    call['remaining'] = call['duration']
-                    self.channels[i] = call
-                    assigned = True
-                    break
-
-            if not assigned:
-                if len(self.queue) < self.queue_length:
-                    call['remaining'] = call['duration']
-                    self.queue.append(call)
-                else:
-                    self.blocked_calls += 1
-
+        # Oblicz statystyki
         busy_channels = sum(1 for ch in self.channels if ch is not None)
         rho = busy_channels / self.num_channels if self.num_channels > 0 else 0
         q_length = len(self.queue)
 
         wait_times = []
         for ch in self.channels:
-            if ch and 'arrival' in ch:
-                wait_times.append(self.current_time - ch['arrival'])
+            if ch and 'arrival_time' in ch:
+                wait_times.append(self.current_time - ch['arrival_time'])
         for q_item in self.queue:
-            if 'arrival' in q_item:
-                wait_times.append(self.current_time - q_item['arrival'])
+            if 'arrival_time' in q_item:
+                wait_times.append(self.current_time - q_item['arrival_time'])
 
         w = np.mean(wait_times) if wait_times else 0
 
@@ -322,7 +394,6 @@ class BaseStationSimulator:
         self.w_history.append(w)
 
         self.save_results()
-
         self.update_channels_display()
         self.update_stats()
         self.update_plots()
@@ -346,6 +417,9 @@ class BaseStationSimulator:
             messagebox.showerror("Błąd", f"Nieprawidłowe parametry: {e}")
             return
 
+        # Krok 1 i 2: Generuj pary (λi, μi)
+        self.generate_pairs()
+
         self.init_results_file()
         self.file_label.config(text=f"Plik: {self.results_file}")
 
@@ -355,13 +429,11 @@ class BaseStationSimulator:
         self.blocked_calls = 0
         self.handoff_calls = 0
         self.current_time = 0
-        self.call_counter = 0
         self.time_history = []
         self.rho_history = []
         self.q_history = []
         self.w_history = []
 
-        self.arrival_times = self.generate_arrivals()
         self.simulating = True
         self.paused = False
         self.simulation_step()
